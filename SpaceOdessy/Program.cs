@@ -2,28 +2,21 @@
 using System.Diagnostics;
 using System.Drawing;
 
-const float kPlayerHeight = 10;
 const int kScreenHeight = 600;
 
-SDL.Init(SDL.InitFlags.Video);
-TTF.Init();
-
-var game = new Game()
+var game = new Game
 {
-    Player = new Player
+    Player = new GameObject
     {
-        Size = new SizeF
-        {
-            Width = 100,
-            Height = kPlayerHeight,
-        },
         Position = new PointF
         {
             X = 50,
-            Y = kScreenHeight - kPlayerHeight - 10,
+            Y = kScreenHeight - 10,
         },
         Speed = 300f,
         Color = Color.Purple,
+        IsPlayerControlled = true,
+        IsAsteroid = false,
     },
     ScreenSize = new Size
     {
@@ -32,97 +25,11 @@ var game = new Game()
     },
 };
 
-SDL.CreateWindowAndRenderer(
-    "SpaceOdessy",
-    game.ScreenSize.Width, game.ScreenSize.Height,
-    0, out var window, out var renderer);
-
-var coinTexture = Image.LoadTexture(renderer, "assets/coin.png");
-SDL.GetTextureSize(coinTexture, out var coinW, out var coinH);
-var coinSize = new SizeF
-{
-    Width = coinW,
-    Height = coinH
-};
-
-var font = TTF.OpenFont("assets/OpenSans-Regular.ttf", 32);
-var textEngine = TTF.CreateRendererTextEngine(renderer);
-
-var objectSpeed = 100f;
-
-var random = new Random();
-
-var lastTime = SDL.GetTicksNS();
-
-var fpsTimer = Stopwatch.StartNew();
-var renderCount = 0;
-
-while (game.IsRunning)
-{
-    var currentTime = SDL.GetTicksNS();
-    var dt = (float)(currentTime - lastTime) / 1_000_000_000;
-    lastTime = currentTime;
-
-    while (SDL.PollEvent(out var @event))
-    {
-        switch (@event.Type)
-        {
-            case (uint)SDL.EventType.Quit:
-                game.IsRunning = false;
-                break;
-            default:
-                // Ignore
-                break;
-        }
-    }
-
-    var timeScale = 1.0f;
-    var keyboardState = SDL.GetKeyboardState(out var _);
-    if (keyboardState[(int)SDL.Scancode.Space])
-    {
-        timeScale = 2.0f;
-    }
-
-    game.Update(
-        dt * timeScale, random,
-        objectSpeed, coinSize);
-    game.Render(
-        renderer,
-        coinTexture, coinSize,
-        textEngine, font);
-
-    renderCount++;
-    if (fpsTimer.Elapsed > TimeSpan.FromSeconds(1))
-    {
-        Console.WriteLine($"FPS: {renderCount}");
-        fpsTimer.Restart();
-        renderCount = 0;
-    }
-}
-
-TTF.CloseFont(font);
-SDL.DestroyTexture(coinTexture);
-
-TTF.DestroyRendererTextEngine(textEngine);
-
-SDL.DestroyWindow(window);
-SDL.DestroyRenderer(renderer);
-
-TTF.Quit();
-SDL.Quit();
+game.Init();
+game.Run();
+game.Deinit();
 
 class GameObject
-{
-    public PointF Position { get; set; }
-
-    public SizeF Size { get; set; }
-
-    public Color Color { get; set; }
-
-    public bool IsAsteroid { get; set; }
-}
-
-class Player
 {
     public PointF Position { get; set; }
 
@@ -131,16 +38,28 @@ class Player
     public float Speed { get; set; }
 
     public Color Color { get; set; }
+
+    public bool IsAsteroid { get; set; }
+
+    public bool IsPlayerControlled { get; set; }
+
+    public Texture? Texture { get; set; }
 }
 
+class Texture
+{
+    public nint SdlTexture { get; set; }
+    
+    public SizeF Size { get; set; }
+}
 
 class Game
 {
     const byte kSDLAlphaOpaque = (byte)SDL.AlphaOpaque;
 
     public bool IsRunning { get; set; } = true;
-    
-    public Player? Player { get; set; }
+
+    public GameObject? Player { get; set; }
 
     public Size ScreenSize { get; set; }
 
@@ -148,16 +67,135 @@ class Game
 
     int score = 0;
 
-    Color background = Color.DarkOrange;
+    readonly Color background = Color.DarkOrange;
 
-    TimeSpan spawnRate = TimeSpan.FromSeconds(3);
-    Stopwatch spawnTimer = Stopwatch.StartNew();
+    static readonly TimeSpan kSpawnRate = TimeSpan.FromSeconds(0.5);
+    readonly Stopwatch spawnTimer = Stopwatch.StartNew();
 
-    public void Update(
-        float dt,
-        Random random, float objectSpeed,
-        SizeF coinSize)
+    public int renderCount = 0;
+    readonly Stopwatch fpsTimer = Stopwatch.StartNew();
+
+    readonly Random random = new();
+
+    Texture? templateCoinTexture = null;
+    Texture? templateAsteroidTexture = null;
+    Texture? templatePlayerTexture = null;
+
+    nint window;
+    nint renderer;
+    nint textEngine;
+    nint font;
+
+    public void Init()
     {
+        SDL.Init(SDL.InitFlags.Video);
+        TTF.Init();
+
+        SDL.CreateWindowAndRenderer(
+            "SpaceOdessy",
+            ScreenSize.Width, ScreenSize.Height,
+            0, out window, out renderer);
+    }
+
+    public void Deinit()
+    {
+        SDL.DestroyWindow(window);
+        SDL.DestroyRenderer(renderer);
+
+        TTF.Quit();
+        SDL.Quit();
+    }
+
+    public static Texture LoadTexture(nint renderer, string filename) 
+    {
+        var texture = Image.LoadTexture(renderer, filename);
+        SDL.GetTextureSize(texture, out var w, out var h);
+        return new Texture
+        {
+            SdlTexture = texture,
+            Size = new SizeF
+            {
+                Width = w,
+                Height = h
+            }
+        };
+    }
+
+    public void Run()
+    {
+        templateCoinTexture = LoadTexture(renderer, "assets/star_medium.png");
+        templateAsteroidTexture = LoadTexture(renderer, "assets/meteor_1.png");
+        templatePlayerTexture = LoadTexture(renderer, "assets/player_ship_C.png");
+
+        if (Player is not null)
+        {
+            Player.Texture = templatePlayerTexture;
+            Player.Size = templatePlayerTexture.Size;
+            Player.Position = new PointF(Player.Position.X, Player.Position.Y - Player.Size.Height);
+        }
+
+        font = TTF.OpenFont("assets/OpenSans-Regular.ttf", 32);
+        textEngine = TTF.CreateRendererTextEngine(renderer);
+
+        var lastUpdate = TimeSpan.Zero;
+        while (IsRunning)
+        {
+            var currentTime = TimeSpan.FromMilliseconds(SDL.GetTicksNS() / 1_000_000.0);
+
+            while (SDL.PollEvent(out var @event))
+            {
+                switch (@event.Type)
+                {
+                    case (uint)SDL.EventType.Quit:
+                        IsRunning = false;
+                        break;
+                    default:
+                        // Ignore
+                        break;
+                }
+            }
+
+            var timeScale = 1.0f;
+            var keyboardState = SDL.GetKeyboardState(out var _);
+            if (keyboardState[(int)SDL.Scancode.Space])
+            {
+                timeScale = 2.0f;
+            }
+
+            var dtUpdate = currentTime - lastUpdate;
+            if (dtUpdate > TimeSpan.FromSeconds(1.0 / 30.0))
+            {
+                Update(dtUpdate * timeScale);
+                lastUpdate = currentTime;
+            }
+
+            Render();
+        }
+
+        TTF.CloseFont(font);
+
+        SDL.DestroyTexture(templatePlayerTexture.SdlTexture);
+        SDL.DestroyTexture(templateCoinTexture.SdlTexture);
+        SDL.DestroyTexture(templateAsteroidTexture.SdlTexture);
+
+        TTF.DestroyRendererTextEngine(textEngine);
+    }
+
+    void CountFPS()
+    {
+        renderCount++;
+        if (fpsTimer.Elapsed > TimeSpan.FromSeconds(1))
+        {
+            Console.WriteLine($"FPS: {renderCount}");
+            fpsTimer.Restart();
+            renderCount = 0;
+        }
+    }
+
+    public void Update(TimeSpan dt)
+    {
+        Console.WriteLine($"Sec {dt.TotalMinutes}");
+
         if (Player is null)
         {
             IsRunning = false;
@@ -176,33 +214,43 @@ class Game
         }
 
         var newPosition = Player.Position;
-        newPosition.X += positionDelta * Player.Speed * dt;
+        newPosition.X += positionDelta * Player.Speed * (float)dt.TotalSeconds;
         Player.Position = newPosition;
 
-        if (spawnTimer.Elapsed > spawnRate)
+        if (spawnTimer.Elapsed > kSpawnRate)
         {
-            const float asteroidSize = 50;
-
             var isAsteroid = random.Next(2) == 0;
             if (isAsteroid)
             {
-                gameObjects.Add(new GameObject
+                if (templateAsteroidTexture is not null)
                 {
-                    Size = new SizeF(asteroidSize, asteroidSize),
-                    Color = Color.DarkGreen,
-                    Position = new PointF((float)random.NextDouble() * (ScreenSize.Width - asteroidSize), 0),
-                    IsAsteroid = true,
-                });
+                    gameObjects.Add(new GameObject
+                    {
+                        Size = templateAsteroidTexture.Size,
+                        Color = Color.Gray,
+                        Position = new PointF(
+                            (float)random.NextDouble() * (ScreenSize.Width - templateAsteroidTexture.Size.Width), 0),
+                        IsAsteroid = true,
+                        Speed = 150f + (float)random.NextDouble() * 100f,
+                        Texture = templateAsteroidTexture,
+                    });
+                }
             }
             else
             {
-                gameObjects.Add(new GameObject
+                if (templateCoinTexture is not null)
                 {
-                    Size = new SizeF(coinSize.Width, coinSize.Height),
-                    Color = Color.LightPink,
-                    Position = new PointF((float)random.NextDouble() * (ScreenSize.Width - coinSize.Width), 0),
-                    IsAsteroid = false,
-                });
+                    gameObjects.Add(new GameObject
+                    {
+                        Size = templateCoinTexture.Size,
+                        Color = Color.Gold,
+                        Position = new PointF(
+                            (float)random.NextDouble() * (ScreenSize.Width - templateCoinTexture.Size.Width), 0),
+                        IsAsteroid = false,
+                        Speed = 100f + (float)random.NextDouble() * 50f,
+                        Texture = templateCoinTexture,
+                    });
+                }
             }
 
             spawnTimer.Restart();
@@ -212,7 +260,7 @@ class Game
         {
             var gameObject = gameObjects[index];
             gameObject.Position = new PointF(
-                gameObject.Position.X, gameObject.Position.Y + dt * objectSpeed);
+                gameObject.Position.X, gameObject.Position.Y + (float)dt.TotalSeconds * gameObject.Speed);
             if (gameObject.Position.Y > ScreenSize.Height)
             {
                 gameObjects.RemoveAt(index);
@@ -239,39 +287,24 @@ class Game
         }
     }
 
-    public void Render(
-        nint renderer,
-        nint coinTexture, SizeF coinSize,
-        nint textEngine, nint font)
+    public void Render()
     {
         SDL.SetRenderDrawColor(renderer, background.R, background.G, background.B, kSDLAlphaOpaque);
         SDL.RenderClear(renderer);
         foreach (var gameObject in gameObjects)
         {
             var objectColor = gameObject.Color;
-            if (gameObject.IsAsteroid)
+            if (gameObject.Texture is not null)
             {
-                SDL.SetRenderDrawColor(
-                    renderer, objectColor.R, objectColor.G, objectColor.B, kSDLAlphaOpaque);
-                SDL.RenderFillRect(renderer, new SDL.FRect
-                {
-                    X = gameObject.Position.X,
-                    Y = gameObject.Position.Y,
-                    W = gameObject.Size.Width,
-                    H = gameObject.Size.Height,
-                });
-            }
-            else
-            {
-                SDL.SetTextureColorMod(coinTexture, objectColor.R, objectColor.G, objectColor.B);
+                SDL.SetTextureColorMod(gameObject.Texture.SdlTexture, objectColor.R, objectColor.G, objectColor.B);
                 SDL.RenderTexture(
-                    renderer, coinTexture,
+                    renderer, gameObject.Texture.SdlTexture,
                     new SDL.FRect
                     {
                         X = 0,
                         Y = 0,
-                        W = coinSize.Width,
-                        H = coinSize.Height,
+                        W = gameObject.Size.Width,
+                        H = gameObject.Size.Height,
                     },
                     new SDL.FRect
                     {
@@ -284,16 +317,27 @@ class Game
             }
         }
 
-        if (Player is not null)
+        if (Player is not null && Player.Texture is not null)
         {
-            SDL.SetRenderDrawColor(renderer, Player.Color.R, Player.Color.G, Player.Color.B, kSDLAlphaOpaque);
-            SDL.RenderFillRect(renderer, new SDL.FRect
-            {
-                X = Player.Position.X,
-                Y = Player.Position.Y,
-                W = Player.Size.Width,
-                H = Player.Size.Height,
-            });
+            SDL.SetTextureColorMod(Player.Texture.SdlTexture, Player.Color.R, Player.Color.G, Player.Color.B);
+            SDL.RenderTexture(
+                renderer, Player.Texture.SdlTexture,
+                new SDL.FRect
+                {
+                    X = 0,
+                    Y = 0,
+                    W = Player.Size.Width,
+                    H = Player.Size.Height,
+                },
+                new SDL.FRect
+                {
+                    X = Player.Position.X,
+                    Y = Player.Position.Y,
+                    W = Player.Size.Width,
+                    H = Player.Size.Height,
+                }
+            );
+
         }
 
         var text = $"Score: {score}";
@@ -302,5 +346,7 @@ class Game
         TTF.DestroyText(sdlText);
 
         SDL.RenderPresent(renderer);
+
+        CountFPS();
     }
 }
